@@ -1,0 +1,1492 @@
+import sys
+import os
+import warnings
+import pandas as pd
+import ctypes
+import numpy as np
+
+# İKON KÜTÜPHANESİ
+import qtawesome as qta 
+
+# GUI Kütüphaneleri
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
+                             QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, 
+                             QLabel, QHeaderView, QMessageBox, QFrame, QSplashScreen,
+                             QAbstractItemView, QLineEdit, QPushButton, QFileDialog, 
+                             QDialog, QDockWidget, QFormLayout, QSpinBox, QDoubleSpinBox, 
+                             QMenu, QInputDialog, QStyleFactory, QGridLayout, QSizePolicy, QStyle, QDialogButtonBox, QComboBox, QGroupBox, QCheckBox, QStyledItemDelegate, QScrollArea)
+from PyQt6.QtCore import Qt, QSize, QTimer, QMarginsF, QSizeF, QBuffer, QByteArray, QPropertyAnimation, QEasingCurve, QUrl, QRect
+from PyQt6.QtGui import QFont, QColor, QIcon, QTextDocument, QPageSize, QPageLayout, QAction, QPalette, QMouseEvent, QPainter, QPixmap, QDesktopServices, QPen, QBrush, QCursor
+from PyQt6.QtPrintSupport import QPrinter
+
+# Grafik Kütüphanesi
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+warnings.filterwarnings("ignore")
+
+# =============================================================================
+# AYARLAR VE STRATEJİK AÇIKLAMALAR
+# =============================================================================
+myappid = 'selcuk.sur.prototip.v10.9.final_integrated' 
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+except ImportError:
+    pass
+
+# impact_type: 
+# 'direct': Direkt sayı (örn: +10 bölüm)
+# 'x_paper': Katsayı * Toplam Yayın (örn: %10 * 1000 = 100 makale)
+# 'x_faculty': Katsayı * Hoca Sayısı (örn: 1.5 * 2000 = 3000 makale)
+# 'quality': Sadece kalite artışı (örn: %50 daha fazla atıf)
+
+PARAMETRELER = {
+    "p1": { 
+        "dosya": "1_makale_hacmi_fractional.xlsx", "agirlik": 10, "ad": "Toplam Yayın Hacmi (Fractional)",
+        "desc": "Üniversitenin toplam makale üretim kapasitesidir (yazar sayısına oranlanmış).",
+        "strategy": "Çok yazarlı makaleler puanı böler. Tek yazarlı veya sadece kurum içi (Selçuk-Selçuk) ortaklı makaleleri teşvik ederek puan kaybını önleyin.",
+        "impact_type": "direct",
+        "fmt": "Bu hedef için net <b>{val:.0f} adet</b> tam puanlık (fractional) makale artışı gerekir."
+    },
+    "p2": { 
+        "dosya": "10_makale_hoca_orani.xlsx", "agirlik": 5,  "ad": "Öğretim Üyesi Başına Düşen Yayın",
+        "desc": "Verimlilik göstergesidir. Toplam yayının hoca sayısına bölümüdür.",
+        "strategy": "Sadece aktif hocalarla bu artış zor. Hiç yayın yapmayan 'pasif' kitleyi harekete geçirecek teşvik/yaptırım uygulayın.",
+        "impact_type": "x_faculty",
+        "fmt": "Mevcut kadronuzla, bu yıl toplamda <b>{impact:.0f} adet fazladan makale</b> üretilmesi gerekir."
+    },
+    "p3": { 
+        "dosya": "2_hoca_basina_q1q2.xlsx", "agirlik": 15, "ad": "Nitelikli Yayın Performansı (Q1/Q2)",
+        "desc": "Yayınların kalitesini ölçer. En iyi dergilerdeki (Q1/Q2) yayın oranıdır.",
+        "strategy": "Q3/Q4 dergi yayınlarına verilen teşvikleri kısıtlayın, tüm ödül mekanizmasını Q1 dergilere yönlendirin. 'Daha az ama daha kaliteli' yayın yapın.",
+        "impact_type": "x_paper",
+        "fmt": "Yıllık üretimden yaklaşık <b>{impact:.0f} adet makalenin</b> daha Q1/Q2 dergilerde basılması (kaydırılması) gerekir."
+    },
+    "p4": { 
+        "dosya": "3_fwci_etki.xlsx", "agirlik": 15, "ad": "Alan Ağırlıklı Atıf Etkisi (FWCI)",
+        "desc": "Yayınların dünya ortalamasına göre ne kadar atıf aldığıdır (Dünya Ort. = 1.0).",
+        "strategy": "Sıfır çeken (atıf almayan) yayınları engelleyin. Derleme (Review) makalelerine ağırlık verin ve popüler konularda çalışın.",
+        "impact_type": "quality",
+        "fmt": "Tüm yayınlarınızın genel atıf kalitesinin ortalama <b>%{pct:.1f}</b> oranında iyileşmesi (daha çok atıf alması) gerekir."
+    },
+    "p5": { 
+        "dosya": "4_mukemmellik_top10.xlsx", "agirlik": 15, "ad": "Yayın Mükemmeliyeti (Top %10)",
+        "desc": "Dünyada en çok atıf alan ilk %10'luk dilime giren yayın oranıdır.",
+        "strategy": "Bu elit bir göstergedir. Sadece en kaliteli araştırmaları destekleyin, etki değeri düşük dergileri tercih etmeyin.",
+        "impact_type": "x_paper",
+        "fmt": "Yaklaşık <b>{impact:.0f} adet makalenin</b> daha 'Top %10' elit dilimine girmesi gerekir."
+    },
+    "p6": { 
+        "dosya": "5_uluslararasi_isbirligi.xlsx", "agirlik": 8,  "ad": "Uluslararası İşbirliği Kapasitesi",
+        "desc": "Yabancı kurumlarla ortak yapılan yayınların oranıdır.",
+        "strategy": "Yeni makale yazmak yerine, eldeki taslaklara yurt dışı 'network'ünü kullanarak yabancı yazar ekleyin. Doktora öğrencilerini yurt dışına gönderin.",
+        "impact_type": "x_paper",
+        "fmt": "Mevcut yayınlardan yaklaşık <b>{impact:.0f} tanesinin</b> daha 'Yabancı Ortaklı' statüsüne geçmesi gerekir."
+    },
+    "p7": { 
+        "dosya": "6_sanayi_isbirligi.xlsx", "agirlik": 5,  "ad": "Üniversite-Sanayi İşbirliği Yetkinliği",
+        "desc": "Özel sektör ile ortak yapılan yayınlardır.",
+        "strategy": "Teknokent firmalarıyla görüşüp, yapılan AR-GE projelerinin sonucunu ortak makaleye dönüştürme şartı koşun.",
+        "impact_type": "x_paper",
+        "fmt": "Yaklaşık <b>{impact:.0f} adet makalede</b> daha sanayi/şirket çalışanı yazar bulunması gerekir."
+    },
+    "p8": { 
+        "dosya": "7_doktora_verimliligi.xlsx", "agirlik": 10, "ad": "Doktora Eğitim Verimliliği",
+        "desc": "Hoca başına düşen mezun doktora öğrencisi sayısıdır.",
+        "strategy": "Doktora süreçlerini hızlandırın, uzayan tezleri bitirtin. Doktora kontenjanlarını hocaların performansına göre artırın.",
+        "impact_type": "x_faculty",
+        "fmt": "Mevcut kadroyla bu yıl <b>{impact:.0f} adet fazladan Doktora öğrencisi</b> mezun edilmelidir."
+    },
+    "p9": { 
+        "dosya": "8_acik_erisim.xlsx", "agirlik": 5,  "ad": "Açık Bilim ve Erişim Oranı",
+        "desc": "Herkese açık (ücretsiz erişilebilir) yayınların oranıdır.",
+        "strategy": "Kütüphane anlaşmalı Open Access dergileri duyurun veya yayınlarınızı yasal süre sonunda üniversitenin açık arşivine (DSpace) yükletin.",
+        "impact_type": "x_paper",
+        "fmt": "Yaklaşık <b>{impact:.0f} adet makalenin</b> daha Açık Erişimli (Open Access) hale getirilmesi gerekir."
+    },
+    "p10": { 
+        "dosya": "9_lisans_ogrenci_orani.xlsx", "agirlik": 7,  "ad": "Öğretim Üyesi Başına Lisans Öğrencisi",
+        "desc": "Eğitim yükü göstergesidir. Düşük olması (az öğrenci) daha iyidir.",
+        "strategy": "Lisans kontenjanlarını optimize edin veya hoca sayısını artırın.",
+        "impact_type": "quality",
+        "fmt": "Hoca başına düşen öğrenci yükünün <b>%{pct:.1f}</b> oranında hafifletilmesi (veya hoca sayısının artırılması) gerekir."
+    },
+    "p11": { 
+        "dosya": "11_akreditasyon.xlsx", "agirlik": 5,  "ad": "Eğitim Kalitesi ve Akreditasyon",
+        "desc": "Akredite olmuş (MÜDEK, FEDEK vb.) program sayısıdır.",
+        "strategy": "Bölüm başkanlarına akreditasyon başvurusu yapmaları için hedef verin ve süreci destekleyin.",
+        "impact_type": "direct",
+        "fmt": "Toplamda <b>{val:.0f} adet yeni bölümün</b> daha akreditasyon belgesi alması gerekir."
+    }
+}
+
+# =============================================================================
+# YARDIMCI SINIFLAR
+# =============================================================================
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def turkce_buyuk_harf(text):
+    if not isinstance(text, str): return str(text)
+    text = text.replace('i', 'İ').replace('ı', 'I')
+    tr_map = str.maketrans("ğüşıöç", "ĞÜŞIÖÇ")
+    return text.translate(tr_map).upper().strip()
+
+class NumericItem(QTableWidgetItem):
+    def __lt__(self, other):
+        try:
+            return (self.data(Qt.ItemDataRole.UserRole) < other.data(Qt.ItemDataRole.UserRole))
+        except:
+            return super().__lt__(other)
+
+# --- KAFA KAFAYA KIYASLAMA PENCERESİ ---
+class HeadToHeadDialog(QDialog):
+    def __init__(self, selcuk_data, competitor_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Kıyaslama: Selçuk Üni. vs {competitor_data['Name']}")
+        self.setWindowIcon(qta.icon('fa5s.balance-scale', color='#2C3E50'))
+        self.resize(700, 500)
+        self.setStyleSheet("background-color: white; color: black;")
+        
+        layout = QVBoxLayout(self)
+        
+        # Başlık Alanı
+        header = QHBoxLayout()
+        lbl1 = QLabel("🦅 Selçuk Üniversitesi")
+        lbl1.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        lbl1.setStyleSheet("color: #C0392B;") # Selçuk rengi
+        
+        lbl_vs = QLabel("VS")
+        lbl_vs.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        lbl_vs.setStyleSheet("color: #7F8C8D;")
+        
+        lbl2 = QLabel(f"🏫 {competitor_data['Name']}")
+        lbl2.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        lbl2.setStyleSheet("color: #2980B9;") # Rakip rengi
+        
+        header.addWidget(lbl1)
+        header.addStretch()
+        header.addWidget(lbl_vs)
+        header.addStretch()
+        header.addWidget(lbl2)
+        layout.addLayout(header)
+        
+        # Tablo
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Parametre", "Selçuk Puan", "Rakip Puan", "Fark (+/-)"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        
+        total_s = 0
+        total_c = 0
+        
+        row_idx = 0
+        for key, p in PARAMETRELER.items():
+            s_val = selcuk_data.get(p["ad"] + " (Puan)", 0)
+            c_val = competitor_data.get(p["ad"] + " (Puan)", 0)
+            diff = s_val - c_val
+            
+            total_s += s_val
+            total_c += c_val
+            
+            table.insertRow(row_idx)
+            table.setItem(row_idx, 0, QTableWidgetItem(p["ad"]))
+            table.setItem(row_idx, 1, QTableWidgetItem(f"{s_val:.2f}"))
+            table.setItem(row_idx, 2, QTableWidgetItem(f"{c_val:.2f}"))
+            
+            item_diff = QTableWidgetItem(f"{diff:+.2f}")
+            if diff > 0:
+                item_diff.setForeground(QColor("green"))
+                item_diff.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            elif diff < 0:
+                item_diff.setForeground(QColor("red"))
+                item_diff.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            table.setItem(row_idx, 3, item_diff)
+            row_idx += 1
+            
+        # Toplam Satırı
+        table.insertRow(row_idx)
+        font_total = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        item_tot_lbl = QTableWidgetItem("TOPLAM SKOR")
+        item_tot_lbl.setFont(font_total)
+        table.setItem(row_idx, 0, item_tot_lbl)
+        
+        item_s = QTableWidgetItem(f"{total_s:.2f}")
+        item_s.setFont(font_total)
+        table.setItem(row_idx, 1, item_s)
+        
+        item_c = QTableWidgetItem(f"{total_c:.2f}")
+        item_c.setFont(font_total)
+        table.setItem(row_idx, 2, item_c)
+        
+        diff_tot = total_s - total_c
+        item_diff_tot = QTableWidgetItem(f"{diff_tot:+.2f}")
+        item_diff_tot.setFont(font_total)
+        item_diff_tot.setForeground(QColor("green") if diff_tot > 0 else QColor("red"))
+        table.setItem(row_idx, 3, item_diff_tot)
+        
+        layout.addWidget(table)
+        
+        btn_close = QPushButton("Kapat")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+
+# --- SPLASH SCREEN ---
+class SplashScreen(QSplashScreen):
+    def __init__(self, image_path, display_time=3000, parent=None):
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaledToWidth(1350, Qt.TransformationMode.SmoothTransformation)
+        super().__init__(pixmap)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self.display_time = display_time
+        self.main_window = None 
+        self.setWindowOpacity(0.0)
+
+    def start_loading(self, main_window):
+        self.main_window = main_window
+        self.show()
+        self.anim_in = QPropertyAnimation(self, b"windowOpacity")
+        self.anim_in.setDuration(1000) 
+        self.anim_in.setStartValue(0.0)
+        self.anim_in.setEndValue(1.0)
+        self.anim_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.anim_in.finished.connect(self.wait_stage)
+        self.anim_in.start()
+        
+    def wait_stage(self):
+        QTimer.singleShot(self.display_time, self.start_fade_out)
+        
+    def start_fade_out(self):
+        self.anim_out = QPropertyAnimation(self, b"windowOpacity")
+        self.anim_out.setDuration(1000) 
+        self.anim_out.setStartValue(1.0)
+        self.anim_out.setEndValue(0.0)
+        self.anim_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.anim_out.finished.connect(self.finish_loading)
+        self.anim_out.start()
+        
+    def finish_loading(self):
+        if self.main_window:
+            self.main_window.start_fade_in()
+        self.close()
+
+# --- ARKA PLAN WIDGET'I ---
+class BackgroundWidget(QWidget):
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.image_path = image_path
+        if not os.path.exists(image_path):
+            alt_path = image_path + ".png"
+            if os.path.exists(alt_path):
+                self.image_path = alt_path
+        self.pixmap = QPixmap(self.image_path)
+        self.opacity = 0.15 
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.fillRect(self.rect(), QColor("#F4F7F6"))
+        if not self.pixmap.isNull():
+            painter.setOpacity(self.opacity)
+            target_h = min(self.height() * 0.7, 700)
+            if target_h > 50:
+                scaled = self.pixmap.scaledToHeight(int(target_h), Qt.TransformationMode.SmoothTransformation)
+                x = ((self.width() - scaled.width()) // 2)
+                y = ((self.height() - scaled.height()) // 2) + 50
+                painter.drawPixmap(x, y, scaled)
+
+class AutoSelectSpinBox(QSpinBox):
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self.selectAll)
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        QTimer.singleShot(0, self.selectAll)
+
+# --- WEIGHT DIALOG ---
+class WeightDialog(QDialog):
+    def __init__(self, current_weights, year_weights, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sistem Ayarları ve Ağırlık Yönetimi")
+        self.setWindowIcon(qta.icon('fa5s.cog', color='#2C3E50'))
+        layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
+        
+        self.icon_expand = self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarUnshadeButton) 
+        self.icon_collapse = self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarShadeButton)
+
+        self.setStyleSheet("""
+            QDialog { background-color: #FFFFFF; color: #000000; }
+            QLabel { color: #000000; }
+            QGroupBox { font-weight: bold; color: #2C3E50; border: 1px solid #BDC3C7; margin-top: 10px; border-radius: 4px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }
+            QSpinBox { background-color: #FFFFFF; color: #000000; border: 1px solid #BDC3C7; border-radius: 4px; padding: 2px; selection-background-color: #E74C3C; selection-color: white; }
+            QPushButton { background-color: #E0E0E0; color: #000000; border: 1px solid #BDC3C7; border-radius: 4px; padding: 6px; }
+            QPushButton:hover { background-color: #D5D8DC; }
+            QPushButton#ToggleBtn { text-align: left; font-weight: bold; color: #2C3E50; border: none; background-color: transparent; margin-top: 10px; padding: 5px; }
+            QPushButton#ToggleBtn:hover { background-color: #F0F0F0; border-radius: 4px; }
+        """)
+        
+        self.current_weights = current_weights.copy()
+        self.current_year_weights = year_weights.copy()
+        self.inputs = {}
+        self.year_inputs = {}
+        self.initUI(layout)
+
+    def initUI(self, layout):
+        grp_params = QGroupBox("Parametre Ağırlıkları (Toplam 100 Olmalı)")
+        layout_params = QFormLayout(grp_params)
+        layout_params.setSpacing(10)
+
+        for key, p in PARAMETRELER.items():
+            spin = AutoSelectSpinBox() 
+            spin.setRange(0, 100)
+            spin.setValue(int(self.current_weights.get(key, p["agirlik"])))
+            spin.setSuffix(" %")
+            spin.setFixedHeight(30) 
+            spin.setFont(QFont("Segoe UI", 10))
+            spin.valueChanged.connect(self.update_total)
+            self.inputs[key] = spin
+            lbl = QLabel(p["ad"])
+            lbl.setFont(QFont("Segoe UI", 10))
+            layout_params.addRow(lbl, spin)
+        
+        self.total_lbl = QLabel("Toplam: 0")
+        self.total_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.total_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        layout_params.addRow(QLabel(""), self.total_lbl)
+        layout.addWidget(grp_params)
+
+        self.btn_toggle = QPushButton(" 3 Yıllık Veri Ağırlıklandırması (Gelişmiş)")
+        self.btn_toggle.setObjectName("ToggleBtn")
+        self.btn_toggle.setCheckable(True)
+        self.btn_toggle.setChecked(False)
+        self.btn_toggle.setIcon(self.icon_expand) 
+        self.btn_toggle.toggled.connect(self.toggle_advanced)
+        layout.addWidget(self.btn_toggle)
+
+        self.advanced_container = QWidget()
+        self.advanced_container.setStyleSheet("QWidget { border: 1px solid #D0D0D0; border-radius: 4px; background-color: #FAFAFA; } QLabel { border: none; } QSpinBox { border: 1px solid #BDC3C7; }")
+        layout_years = QFormLayout(self.advanced_container)
+        layout_years.setContentsMargins(10, 10, 10, 10)
+        
+        labels = {"y1": "2023 Yılı Ağırlık", "y2": "2024 Yılı Ağırlık", "y3": "2025 Yılı Ağırlık"}
+        for k, text in labels.items():
+            spin = AutoSelectSpinBox()
+            spin.setRange(0, 100)
+            spin.setValue(int(self.current_year_weights.get(k, 0)))
+            spin.setSuffix(" %")
+            spin.setFixedHeight(30)
+            spin.setFont(QFont("Segoe UI", 10))
+            spin.valueChanged.connect(self.update_total_years)
+            self.year_inputs[k] = spin
+            layout_years.addRow(QLabel(text), spin)
+
+        self.total_years_lbl = QLabel("Toplam: 0")
+        self.total_years_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.total_years_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.total_years_lbl.setStyleSheet("border: none;") 
+        layout_years.addRow(QLabel(""), self.total_years_lbl)
+        layout.addWidget(self.advanced_container)
+        self.advanced_container.setVisible(False) 
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        
+        btn_reset = QPushButton("Varsayılan Ayarlara Dön")
+        btn_reset.setStyleSheet("background-color: #E74C3C; color: white;")
+        btn_reset.clicked.connect(self.reset_defaults)
+        btn_box.addButton(btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
+
+        layout.addWidget(btn_box)
+        self.update_total()
+        self.update_total_years()
+
+    def toggle_advanced(self, checked):
+        self.advanced_container.setVisible(checked)
+        if checked: self.btn_toggle.setIcon(self.icon_collapse)
+        else: self.btn_toggle.setIcon(self.icon_expand)
+        QTimer.singleShot(50, self.adjustSize)
+
+    def update_total(self):
+        total = sum([spin.value() for spin in self.inputs.values()])
+        self.total_lbl.setText(f"Toplam: {total}")
+        self.total_lbl.setStyleSheet("color: green; font-weight: bold; border:none;" if total == 100 else "color: red; font-weight: bold; border:none;")
+
+    def update_total_years(self):
+        total = sum([spin.value() for spin in self.year_inputs.values()])
+        self.total_years_lbl.setText(f"Toplam: {total}")
+        self.total_years_lbl.setStyleSheet("color: green; font-weight: bold; border:none;" if total == 100 else "color: red; font-weight: bold; border:none;")
+
+    def reset_defaults(self):
+        for key, p in PARAMETRELER.items():
+            self.inputs[key].setValue(p["agirlik"])
+        self.year_inputs['y1'].setValue(20)
+        self.year_inputs['y2'].setValue(30)
+        self.year_inputs['y3'].setValue(50)
+
+    def get_weights(self):
+        return {key: spin.value() for key, spin in self.inputs.items()}
+    
+    def get_year_weights(self):
+        return {key: spin.value() for key, spin in self.year_inputs.items()}
+
+# --- YENİ 2 SEKMELİ HEDEF ANALİZİ PENCERESİ ---
+class TargetAnalysisDialog(QDialog):
+    def __init__(self, target_rank, target_uni, gap, single_suggestions, balanced_suggestions, uni_stats, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Stratejik Hedef Analizi ve Yol Haritası")
+        self.setWindowIcon(qta.icon('fa5s.chart-line', color='#2C3E50'))
+        self.resize(750, 650)
+        self.uni_stats = uni_stats
+        self.setStyleSheet("""
+            QDialog { background-color: #FFFFFF; }
+            QLabel { color: #2C3E50; }
+            QGroupBox { font-weight: bold; border: 1px solid #BDC3C7; border-radius: 6px; margin-top: 10px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }
+            QTabWidget::pane { border: 1px solid #C0C0C0; top: -1px; } 
+            QTabBar::tab { background: #E0E0E0; color: #000000; padding: 10px; min-width: 150px; }
+            QTabBar::tab:selected { background: #FFFFFF; border-bottom-color: #FFFFFF; font-weight: bold; }
+        """)
+        
+        layout = QVBoxLayout(self)
+        
+        # Üst Bilgi Paneli
+        header_frame = QFrame()
+        header_frame.setStyleSheet("background-color: #ECF0F1; border-radius: 8px; padding: 10px;")
+        h_layout = QVBoxLayout(header_frame)
+        
+        lbl_target = QLabel(f"🎯 HEDEF: {target_rank}. Sıra ({target_uni})")
+        lbl_target.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        lbl_target.setStyleSheet("color: #C0392B;")
+        
+        lbl_gap = QLabel(f"📊 Gereken Toplam Puan Artışı: +{gap:.2f} puan")
+        lbl_gap.setFont(QFont("Segoe UI", 12))
+        lbl_gap.setStyleSheet("color: #2980B9;")
+        
+        h_layout.addWidget(lbl_target)
+        h_layout.addWidget(lbl_gap)
+        layout.addWidget(header_frame)
+        
+        # Sekmeli Yapı
+        tabs = QTabWidget()
+        
+        # --- SEKME 1: ODAKLANMIŞ BÜYÜME (Eski Yöntem) ---
+        tab_single = QWidget()
+        self.build_suggestion_tab(tab_single, single_suggestions, "Bu senaryoda, hedefe ulaşmak için <b>SADECE BİR</b> parametreye odaklanılır.\n"
+                                                            "Aşağıdaki seçeneklerden <b>HERHANGİ BİRİNİ (VEYA)</b> yapmanız yeterlidir.")
+        
+        # --- SEKME 2: DENGELİ STRATEJİ (Yeni Yöntem) ---
+        tab_balanced = QWidget()
+        self.build_suggestion_tab(tab_balanced, balanced_suggestions, "Bu senaryoda, hedefe ulaşmak için yük <b>TÜM PARAMETRELERE</b> dengeli dağıtılır.\n"
+                                                            "Aşağıdaki hedeflerin <b>HEPSİNİ AYNI ANDA (VE)</b> gerçekleştirmeniz gerekir.", is_balanced=True)
+        
+        # Tabları ekle
+        tabs.addTab(tab_single, "🚀 Odaklanmış Büyüme (Tekli)")
+        tabs.addTab(tab_balanced, "⚖️ Dengeli Strateji (Karma)")
+        layout.addWidget(tabs)
+        
+        btn_close = QPushButton("Anlaşıldı, Kapat")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+
+    def build_suggestion_tab(self, tab_widget, suggestions, info_text, is_balanced=False):
+        layout = QVBoxLayout(tab_widget)
+        lbl_info = QLabel(info_text)
+        lbl_info.setWordWrap(True)
+        layout.addWidget(lbl_info)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        l_v = QVBoxLayout(content)
+        
+        items = suggestions if not is_balanced else suggestions.items()
+        
+        for item_data in items:
+            if is_balanced:
+                p_code, val = item_data
+                if val <= 0.001: continue
+                adder_val = val
+            else:
+                p_code = item_data['code']
+                try: adder_val = float(item_data['required_adder'].replace("+", ""))
+                except: adder_val = 0.0
+            
+            param_info = PARAMETRELER.get(p_code, {})
+            
+            # --- SAHA KARŞILIĞI HESABI ---
+            impact_text = "Hesaplanamıyor"
+            i_type = param_info.get("impact_type", "direct")
+            fmt_str = param_info.get("fmt", "{val}")
+            
+            if i_type == "direct":
+                impact_text = fmt_str.format(val=adder_val)
+            elif i_type == "quality":
+                impact_text = fmt_str.format(pct=adder_val*100)
+            elif i_type == "x_paper":
+                # Toplam Yayın Sayısı * Artış Oranı
+                calc_impact = self.uni_stats.get('total_papers', 1000) * adder_val
+                impact_text = fmt_str.format(impact=calc_impact)
+            elif i_type == "x_faculty":
+                # Hoca Sayısı * Artış
+                calc_impact = self.uni_stats.get('total_faculty', 500) * adder_val
+                impact_text = fmt_str.format(impact=calc_impact)
+
+            gb = QGroupBox(param_info.get("ad", "Parametre"))
+            if is_balanced:
+                gb.setStyleSheet("QGroupBox { background-color: #F9FBE7; border: 1px solid #CDDC39; }")
+            else:
+                gb.setStyleSheet("QGroupBox { background-color: #FAFAFA; border: 1px solid #D0D0D0; }")
+                
+            v = QVBoxLayout(gb)
+            
+            adder_str = f"+{adder_val:.3f}" if adder_val < 1 else f"+{adder_val:.1f}"
+            v.addWidget(QLabel(f"Hedef Veri Artışı: <span style='color:#E74C3C; font-weight:bold;'>{adder_str}</span>"))
+            
+            # SAHA KARŞILIĞI (MAVİ KUTU)
+            lbl_impact = QLabel(f"🧩 <b>Saha Karşılığı:</b> {impact_text}")
+            lbl_impact.setStyleSheet("background-color: #E3F2FD; color: #0D47A1; padding: 4px; border-radius: 4px; border: 1px solid #BBDEFB;")
+            lbl_impact.setWordWrap(True)
+            v.addWidget(lbl_impact)
+            
+            v.addWidget(QLabel(f"💡 <i>{param_info.get('strategy', '')}</i>"))
+            l_v.addWidget(gb)
+            
+        l_v.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+# =============================================================================
+# GRAFİK PENCERESİ
+# =============================================================================
+class RadarChartWindow(QDialog):
+    def __init__(self, data_dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Üniversite Kıyaslama Analizi")
+        self.setGeometry(200, 200, 1000, 800)
+        self.setStyleSheet("background-color: white; color: black;")
+        self.data_dict = data_dict
+        self.lines = {} 
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        self.figure = Figure(figsize=(10, 10), dpi=100)
+        self.figure.patch.set_facecolor('white') 
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+        self.plot_radar()
+        
+    def plot_radar(self):
+        ax = self.figure.add_subplot(111, polar=True)
+        ax.set_facecolor('#FAFAFA') 
+        labels = self.data_dict['Labels']
+        short_labels = [lbl[:15]+"..." if len(lbl)>15 else lbl for lbl in labels]
+        num_vars = len(labels)
+        angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+        angles += angles[:1]
+        short_labels += short_labels[:1] 
+        colors = ['#E74C3C', '#3498DB', '#F1C40F', '#2ECC71', '#9B59B6', '#1ABC9C', '#34495E']
+        
+        for i, (uni_name, values) in enumerate(self.data_dict['Universities'].items()):
+            plot_values = values + values[:1]
+            color = colors[i % len(colors)]
+            width = 2
+            alpha_val = 0.1
+            if "SELÇUK" in turkce_buyuk_harf(uni_name):
+                color = '#000000'
+                width = 3
+                alpha_val = 0.05 
+            line, = ax.plot(angles, plot_values, linewidth=width, label=uni_name, color=color)
+            fill = ax.fill(angles, plot_values, alpha=alpha_val, color=color)
+            self.lines[uni_name] = (line, fill[0]) 
+
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(short_labels[:-1], size=8, color='black') 
+        ax.yaxis.grid(True, linestyle='--', color='gray', alpha=0.5)
+        ax.xaxis.grid(True, linestyle='-', color='gray', alpha=0.3)
+        legend = ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+        for text in legend.get_texts():
+            text.set_color("black")
+            text.set_picker(True) 
+        self.figure.canvas.mpl_connect('pick_event', self.on_legend_click)
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def on_legend_click(self, event):
+        legend_text = event.artist
+        uni_name = legend_text.get_text()
+        if uni_name in self.lines:
+            line, fill = self.lines[uni_name]
+            new_visible = not line.get_visible()
+            line.set_visible(new_visible)
+            fill.set_visible(new_visible)
+            legend_text.set_color("black" if new_visible else "gray")
+            self.canvas.draw() 
+
+# =============================================================================
+# ANA UYGULAMA
+# =============================================================================
+class SURApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("SUR: Akademik Performans Simülasyonu v10.9")
+        self.setGeometry(50, 50, 1600, 900) 
+        self.setWindowIcon(QIcon(resource_path("logo.ico")))
+        
+        self.raw_data = None 
+        self.current_df = None 
+        self.base_ranks = {} 
+        self.uni_stats = {} # Seçilen (Selçuk) üniversitenin temel istatistikleri
+        
+        self.active_weights = {k: v["agirlik"] for k, v in PARAMETRELER.items()}
+        self.year_weights = {"y1": 20, "y2": 30, "y3": 50}
+        
+        self.sim_adders = {key: 0.0 for key in PARAMETRELER.keys()}
+        self.trend_include_selcuk = False 
+        
+        self.base_font_size = 10
+        self.current_font_size = 10
+
+        self.init_style() 
+        self.load_raw_data()
+        self.calculate_base_ranks() 
+        
+        self.initUI() 
+        self.recalculate_scores()
+        self.refresh_tabs()
+        self.apply_zoom()
+        self.fade_in_animation = None
+
+    def get_university_stats(self, uni_key):
+        """Üniversitenin P1 ve P2 verilerinden Hoca ve Toplam Yayın sayısını tahmin eder."""
+        row = self.current_df[self.current_df["Universite_Key"] == uni_key]
+        if row.empty: return {'total_papers': 1000, 'total_faculty': 500}
+        
+        # P1: Toplam Hacim (Fractional) -> Bunu Toplam Yayın (Total) olarak varsayalım
+        p1_val = row.iloc[0]["p1_Ham"] if "p1_Ham" in row.columns else 0
+        
+        # P2: Hoca Başına Yayın
+        p2_val = row.iloc[0]["p2_Ham"] if "p2_Ham" in row.columns else 0.1
+        
+        # Türetme: Hoca Sayısı = Yayın / (Yayın/Hoca)
+        if p2_val > 0:
+            est_faculty = p1_val / p2_val
+        else:
+            est_faculty = 500 # Fallback
+            
+        return {
+            'total_papers': p1_val if p1_val > 0 else 1000,
+            'total_faculty': est_faculty if est_faculty > 0 else 500
+        }
+
+    def start_fade_in(self):
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.fade_in_animation = QPropertyAnimation(self, b"windowOpacity")
+        self.fade_in_animation.setDuration(1000) 
+        self.fade_in_animation.setStartValue(0.0)
+        self.fade_in_animation.setEndValue(1.0)
+        self.fade_in_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.fade_in_animation.finished.connect(self.open_settings_dialog)
+        self.fade_in_animation.start()
+
+    def init_style(self):
+        self.setStyleSheet("""
+            QWidget { color: #000000; font-family: 'Segoe UI', sans-serif; }
+            QTabWidget { background-color: transparent; }
+            QTabWidget::pane { background-color: transparent; border: 1px solid #BDC3C7; }
+            QTableWidget { background-color: rgba(255, 255, 255, 200); color: #000000; gridline-color: #E0E0E0; border: 1px solid #BDC3C7; selection-background-color: rgba(178, 223, 219, 200); selection-color: #000000; }
+            QTableWidget::item { padding: 4px; }
+            QHeaderView::section { background-color: rgba(44, 62, 80, 240); color: #FFFFFF; padding: 8px; font-weight: bold; border: none; border-right: 1px solid #34495E; }
+            QTabBar::tab { background: #E0E0E0; color: #000000; padding: 8px 12px; }
+            QTabBar::tab:selected { background: #FFFFFF; color: #2980B9; font-weight: bold; }
+            QPushButton { color: #FFFFFF; padding: 8px 15px; border-radius: 4px; font-weight: bold; border: none; }
+            QDialog QPushButton { color: #000000; background-color: #E0E0E0; border: 1px solid #ADADAD; min-width: 60px; font-weight: normal; }
+            QDialog QPushButton:hover { background-color: #D5D8DC; }
+            QPushButton#SimBtn { background-color: #ECF0F1; border: 1px solid #BDC3C7; border-radius: 3px; padding: 2px; min-width: 20px; min-height: 20px; }
+            QPushButton#SimBtn:hover { background-color: #BDC3C7; }
+            QPushButton#FooterBtn { background-color: #E0E0E0; color: #333333; border: 1px solid #CCCCCC; border-radius: 4px; padding: 5px; }
+            QPushButton#FooterBtn:hover { background-color: #D5D8DC; border-color: #999999; }
+            QLineEdit { background-color: #FFFFFF; color: #000000; border: 1px solid #BDC3C7; padding: 4px; border-radius: 4px; }
+            QDoubleSpinBox, QSpinBox { background-color: #FFFFFF; color: #000000; border: 1px solid #BDC3C7; padding: 2px; border-radius: 4px; min-height: 25px; }
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }
+            QDockWidget { color: #000000; }
+            QDockWidget::title { text-align: left; background: #2C3E50; color: #FFFFFF; padding: 8px; }
+            QComboBox { background-color: #FFFFFF; border: 1px solid #BDC3C7; border-radius: 4px; padding: 5px; min-width: 150px; }
+            QComboBox::drop-down { border: none; }
+            QComboBox::down-arrow { image: none; border-left: 2px solid #BDC3C7; border-top: 2px solid #BDC3C7; width: 8px; height: 8px; transform: rotate(45deg); margin-right: 5px; }
+            QCheckBox { font-weight: bold; color: #2C3E50; }
+        """)
+
+    def load_raw_data(self):
+        self.raw_data = pd.DataFrame()
+        universite_isimleri = {}
+        dfs_to_merge = [] 
+        for key, p in PARAMETRELER.items():
+            try:
+                full_path = resource_path(os.path.join("data", p["dosya"]))
+                if not os.path.exists(full_path): continue
+                df_full = pd.read_excel(full_path)
+                df = pd.DataFrame()
+                df["Universite_Ham"] = df_full.iloc[:, 0]
+                if df_full.shape[1] >= 4:
+                    col1 = pd.to_numeric(df_full.iloc[:, 1], errors='coerce').fillna(0)
+                    col2 = pd.to_numeric(df_full.iloc[:, 2], errors='coerce').fillna(0)
+                    col3 = pd.to_numeric(df_full.iloc[:, 3], errors='coerce').fillna(0)
+                else:
+                    col1 = 0; col2 = 0
+                    col3 = pd.to_numeric(df_full.iloc[:, 1], errors='coerce').fillna(0)
+                df[f"{key}_y1"] = col1
+                df[f"{key}_y2"] = col2
+                df[f"{key}_y3"] = col3
+                df["Universite_Key"] = df["Universite_Ham"].apply(turkce_buyuk_harf)
+                df["Universite_Ham"] = df["Universite_Ham"].astype(str).str.strip()
+                for index, row in df.iterrows():
+                    if row["Universite_Key"] not in universite_isimleri:
+                        universite_isimleri[row["Universite_Key"]] = row["Universite_Ham"]
+                dfs_to_merge.append(df[["Universite_Key", f"{key}_y1", f"{key}_y2", f"{key}_y3"]])
+            except Exception as e:
+                print(f"Hata ({p['dosya']}): {e}")
+        if not dfs_to_merge:
+            if not hasattr(self, 'tabs'): QMessageBox.critical(self, "Hata", "Veri dosyaları yüklenemedi!")
+            return False
+        from functools import reduce
+        self.raw_data = reduce(lambda left, right: pd.merge(left, right, on="Universite_Key", how="outer"), dfs_to_merge)
+        self.raw_data.fillna(0, inplace=True)
+        self.raw_data["Üniversite"] = self.raw_data["Universite_Key"].map(universite_isimleri).fillna(self.raw_data["Universite_Key"])
+        self.raw_data = self.raw_data.drop_duplicates(subset="Universite_Key", keep="first").reset_index(drop=True)
+        return True
+
+    def calculate_base_ranks(self):
+        """Simülasyon öncesi ham sıralamayı kaydeder"""
+        df_base = self.get_simulated_df({key: 0.0 for key in PARAMETRELER.keys()})
+        for idx, row in df_base.iterrows():
+            self.base_ranks[row["Universite_Key"]] = idx + 1
+
+    def refresh_data_from_excel(self):
+        try:
+            success = self.load_raw_data()
+            if success:
+                self.calculate_base_ranks() 
+                self.recalculate_scores()
+                self.refresh_tabs()
+                self.apply_zoom()
+                QMessageBox.information(self, "Bilgi", "Veriler Excel'den başarıyla yenilendi!")
+            else:
+                QMessageBox.warning(self, "Uyarı", "Veriler okunamadı.")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Yenileme hatası:\n{str(e)}")
+
+    def get_simulated_df(self, adders):
+        if self.raw_data is None or self.raw_data.empty: return pd.DataFrame()
+        df_calc = self.raw_data.copy()
+        
+        use_trend = False
+        if hasattr(self, 'chk_trend') and self.chk_trend.isChecked():
+            use_trend = True
+        
+        if hasattr(self, 'combo_mode') and self.combo_mode is not None: mode = self.combo_mode.currentData()
+        else: mode = "3YIL"
+        
+        w1 = self.year_weights['y1'] / 100.0
+        w2 = self.year_weights['y2'] / 100.0
+        w3 = self.year_weights['y3'] / 100.0
+        
+        for key in PARAMETRELER.keys():
+            if f"{key}_y3" not in df_calc.columns: continue 
+            
+            # --- Ana Hesaplama (Standart) ---
+            if mode == "SONYIL": val_weighted = df_calc[f"{key}_y3"]
+            else: val_weighted = (df_calc[f"{key}_y1"] * w1) + (df_calc[f"{key}_y2"] * w2) + (df_calc[f"{key}_y3"] * w3)
+            
+            if use_trend:
+                col1 = df_calc[f"{key}_y1"].replace(0, np.nan)
+                growth1 = (df_calc[f"{key}_y2"] - df_calc[f"{key}_y1"]) / col1
+                col2 = df_calc[f"{key}_y2"].replace(0, np.nan)
+                growth2 = (df_calc[f"{key}_y3"] - df_calc[f"{key}_y2"]) / col2
+                avg_growth = (growth1.fillna(0) + growth2.fillna(0)) / 2
+                val_trend = df_calc[f"{key}_y3"] * (1 + avg_growth)
+                val_trend = val_trend.apply(lambda x: max(0, x))
+                df_calc[key] = val_trend
+                if not self.trend_include_selcuk:
+                    selcuk_indices = df_calc[df_calc["Universite_Key"].str.contains("SELÇUK", na=False)].index
+                    if not selcuk_indices.empty:
+                        df_calc.loc[selcuk_indices, key] = val_weighted.loc[selcuk_indices]
+            else:
+                df_calc[key] = val_weighted
+        
+        # --- Selçuk Manuel Ekleme ---
+        selcuk_idx = df_calc[df_calc["Universite_Key"].str.contains("SELÇUK", na=False)].index
+        if not selcuk_idx.empty:
+            idx = selcuk_idx[0]
+            for key in PARAMETRELER.keys():
+                if key not in df_calc.columns: continue
+                adder = adders[key]
+                original_val = df_calc.at[idx, key]
+                new_val = original_val + adder 
+                df_calc.at[idx, key] = max(0, new_val)
+
+        # --- Puanlama ---
+        df_calc["SUR TOPLAM SKOR"] = 0
+        
+        for key, p in PARAMETRELER.items():
+            if key not in df_calc.columns: continue
+            ham_col = key
+            puan_col = p["ad"] + " (Puan)"
+            max_val = df_calc[ham_col].max()
+            weight = self.active_weights.get(key, p["agirlik"])
+            if max_val > 0: df_calc[puan_col] = (df_calc[ham_col] / max_val) * weight
+            else: df_calc[puan_col] = 0
+            df_calc.rename(columns={ham_col: p["ad"] + "_Ham"}, inplace=True)
+            df_calc["SUR TOPLAM SKOR"] += df_calc[puan_col]
+            
+        df_sorted = df_calc.sort_values("SUR TOPLAM SKOR", ascending=False).reset_index(drop=True)
+        cols = df_sorted.select_dtypes(include=['float', 'int']).columns
+        df_sorted[cols] = df_sorted[cols].round(2)
+        
+        # Sıralama Değişimini Hesapla
+        df_sorted["Rank_Change"] = 0
+        for idx, row in df_sorted.iterrows():
+            current_rank = idx + 1
+            base_rank = self.base_ranks.get(row["Universite_Key"], current_rank)
+            change = base_rank - current_rank 
+            df_sorted.at[idx, "Rank_Change"] = change
+            
+        return df_sorted
+
+    def recalculate_scores(self):
+        self.current_df = self.get_simulated_df(self.sim_adders)
+
+    def open_data_folder(self):
+        folder_path = resource_path("data")
+        if not os.path.exists(folder_path): os.makedirs(folder_path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
+
+    def on_trend_toggled(self, checked):
+        if checked:
+            reply = QMessageBox.question(self, "Selçuk Üniversitesi Trend Tercihi", 
+                                         "Selçuk Üniversitesi için de geçmiş büyüme oranlarını (Trend) hesaba katalım mı?\n\n"
+                                         "Evet: Selçuk Üni. de geçmiş performansına göre artar/azalır.\n"
+                                         "Hayır: Selçuk Üni. sabit kalır (veya ağırlıklı ortalama), diğerleri trende göre değişir.",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self.trend_include_selcuk = True
+            else:
+                self.trend_include_selcuk = False
+        else:
+            self.trend_include_selcuk = False 
+        self.run_simulation()
+
+    def open_settings_dialog(self):
+        dialog = WeightDialog(self.active_weights, self.year_weights, self)
+        if dialog.exec():
+            self.active_weights = dialog.get_weights()
+            self.year_weights = dialog.get_year_weights()
+            self.recalculate_scores()
+            self.refresh_tabs()
+            self.apply_zoom()
+            QMessageBox.information(self, "Bilgi", "Ayarlar ve ağırlıklar güncellendi.")
+
+    def initUI(self):
+        main_widget = BackgroundWidget(resource_path("selcuklogo.png"))
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
+
+        header_layout = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title = QLabel("SUR: Akademik Performans Yönetim Sistemi")
+        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        title.setStyleSheet("color: #2C3E50;") 
+        sub = QLabel("Selçuk Üniversitesi Performans ve Sıralama Simülasyonu")
+        sub.setStyleSheet("color: #7F8C8D;")
+        title_box.addWidget(title)
+        title_box.addWidget(sub)
+        header_layout.addLayout(title_box)
+        header_layout.addStretch()
+        
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItem("📅 Son 3 Yıl (Ağırlıklı)", "3YIL")
+        self.combo_mode.addItem("⚡ Sadece Son Yıl", "SONYIL")
+        self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
+        self.combo_mode.setToolTip("Hesaplama Yöntemini Seçin")
+        self.combo_mode.setStyleSheet("QComboBox { background-color: #ECF0F1; color: #2C3E50; font-weight: bold; padding: 5px; border: 1px solid #BDC3C7; border-radius: 4px; }")
+        
+        btn_folder = QPushButton("📂 Klasörü Aç")
+        btn_folder.clicked.connect(self.open_data_folder)
+        btn_folder.setStyleSheet("background-color: #34495E; color: white;") 
+        
+        btn_refresh = QPushButton("🔄 Verileri Yenile")
+        btn_refresh.clicked.connect(self.refresh_data_from_excel)
+        btn_refresh.setStyleSheet("background-color: #F39C12; color: white;") 
+        
+        btn_sim = QPushButton("🎛️ Simülasyon")
+        btn_sim.setCheckable(True)
+        btn_sim.setChecked(False) 
+        btn_sim.clicked.connect(self.toggle_simulation_panel)
+        btn_sim.setStyleSheet("background-color: #2980B9; color: white;")
+        
+        btn_compare = QPushButton("🕸️ Kıyasla")
+        btn_compare.clicked.connect(self.open_comparison_chart)
+        btn_compare.setStyleSheet("background-color: #8E44AD; color: white;")
+
+        btn_excel = QPushButton("📊 Excel")
+        btn_excel.clicked.connect(self.export_to_excel)
+        btn_excel.setStyleSheet("background-color: #27AE60; color: white;")
+        
+        btn_pdf = QPushButton("📑 PDF")
+        btn_pdf.clicked.connect(self.export_to_pdf)
+        btn_pdf.setStyleSheet("background-color: #C0392B; color: white;")
+
+        btn_settings = QPushButton("")
+        btn_settings.setIcon(qta.icon('fa5s.cog', color='white'))
+        btn_settings.setToolTip("Ağırlık Ayarları")
+        btn_settings.clicked.connect(self.open_settings_dialog)
+        btn_settings.setStyleSheet("background-color: #7F8C8D; color: white; min-width: 40px;")
+
+        header_layout.addWidget(self.combo_mode)
+        header_layout.addWidget(btn_folder) 
+        header_layout.addWidget(btn_refresh)
+        header_layout.addWidget(btn_sim)
+        header_layout.addWidget(btn_compare)
+        header_layout.addWidget(btn_excel)
+        header_layout.addWidget(btn_pdf)
+        header_layout.addWidget(btn_settings) 
+        layout.addLayout(header_layout)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Üniversite Ara...")
+        self.search_input.textChanged.connect(self.filter_tables)
+        layout.addWidget(self.search_input)
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+        self.create_simulation_dock()
+        self.sim_dock.hide()
+
+        footer_widget = QWidget()
+        footer_layout = QHBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(5) 
+        icon_color = '#2C3E50'
+        btn_zoom_out = QPushButton()
+        btn_zoom_out.setObjectName("FooterBtn")
+        btn_zoom_out.setIcon(qta.icon('fa5s.search-minus', color=icon_color))
+        btn_zoom_out.setFixedSize(35, 30)
+        btn_zoom_out.clicked.connect(self.zoom_out)
+        btn_reset_zoom = QPushButton()
+        btn_reset_zoom.setObjectName("FooterBtn")
+        btn_reset_zoom.setIcon(qta.icon('fa5s.sync-alt', color=icon_color))
+        btn_reset_zoom.setFixedSize(35, 30)
+        btn_reset_zoom.clicked.connect(self.reset_zoom)
+        btn_zoom_in = QPushButton()
+        btn_zoom_in.setObjectName("FooterBtn")
+        btn_zoom_in.setIcon(qta.icon('fa5s.search-plus', color=icon_color))
+        btn_zoom_in.setFixedSize(35, 30)
+        btn_zoom_in.clicked.connect(self.zoom_in)
+        footer_layout.addWidget(btn_zoom_out)
+        footer_layout.addWidget(btn_reset_zoom)
+        footer_layout.addWidget(btn_zoom_in)
+        
+        hint_label = QLabel("💡 İpucu: Ctrl + Mouse Tekerleği de çalışır. Tabloda rakibe SAĞ TIKLAYIP kıyaslama yapabilirsiniz.")
+        hint_label.setStyleSheet("color: gray; font-size: 11px; margin-left: 10px;")
+        footer_layout.addWidget(hint_label)
+        footer_layout.addStretch() 
+        footer_label = QLabel("© 2026 SUR Modeli - Made by Metin TURGAY & M. Emre BAYRAKCI")
+        footer_label.setStyleSheet("color: gray;")
+        footer_layout.addWidget(footer_label)
+        layout.addWidget(footer_widget)
+
+    def on_mode_changed(self):
+        self.recalculate_scores()
+        self.refresh_tabs()
+        self.apply_zoom()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0: self.zoom_in()
+            else: self.zoom_out()
+            event.accept()
+        else: super().wheelEvent(event)
+
+    def zoom_in(self):
+        if self.current_font_size < 30: 
+            self.current_font_size += 1
+            self.apply_zoom()
+
+    def zoom_out(self):
+        if self.current_font_size > 6: 
+            self.current_font_size -= 1
+            self.apply_zoom()
+
+    def reset_zoom(self):
+        self.current_font_size = self.base_font_size
+        self.apply_zoom()
+
+    def apply_zoom(self):
+        new_font = QFont("Segoe UI", self.current_font_size)
+        new_font_bold = QFont("Segoe UI", self.current_font_size, QFont.Weight.Bold)
+        header_font = QFont("Segoe UI", self.current_font_size, QFont.Weight.Bold)
+        for i in range(self.tabs.count()):
+            table = self.tabs.widget(i).findChild(QTableWidget)
+            if not table: continue
+            table.setFont(new_font)
+            table.horizontalHeader().setFont(header_font)
+            table.verticalHeader().setDefaultSectionSize(int(self.current_font_size * 2.5)) 
+            rows_to_bold = []
+            for row in range(table.rowCount()):
+                if "SELÇUK" in turkce_buyuk_harf(table.item(row, 0).text()): rows_to_bold.append(row)
+            cols_to_bold = []
+            for col in range(table.columnCount()):
+                if "TOPLAM" in table.horizontalHeaderItem(col).text(): cols_to_bold.append(col)
+            for row in rows_to_bold:
+                for col in range(table.columnCount()):
+                    if table.item(row, col): table.item(row, col).setFont(new_font_bold)
+            for col in cols_to_bold:
+                for row in range(table.rowCount()):
+                    if table.item(row, col): table.item(row, col).setFont(new_font_bold)
+            table.resizeColumnsToContents()
+
+    def create_simulation_dock(self):
+        self.sim_dock = QDockWidget("Simülasyon ve Senaryo Paneli", self)
+        self.sim_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        self.sim_dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable | 
+                                  QDockWidget.DockWidgetFeature.DockWidgetMovable | 
+                                  QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        
+        widget = QWidget()
+        widget.setStyleSheet("background-color: #F4F7F6; color: #000000;") 
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        grid_layout = QGridLayout(widget)
+        grid_layout.setSpacing(10)
+        
+        info_lbl = QLabel("Selçuk Üni. Simülasyonu:")
+        info_lbl.setStyleSheet("color: #7F8C8D; font-weight: bold;")
+        grid_layout.addWidget(info_lbl, 0, 0, 1, 2)
+
+        self.chk_trend = QCheckBox("Rakipler için Trend Analizi Uygula (2026 Tahmini)")
+        self.chk_trend.setToolTip("İşaretlenirse: Son 3 yılın büyüme hızına göre 2026 tahmini yapılır.")
+        self.chk_trend.setStyleSheet("color: #2C3E50; font-weight: bold;")
+        self.chk_trend.toggled.connect(self.on_trend_toggled) 
+        grid_layout.addWidget(self.chk_trend, 1, 0, 1, 2) 
+
+        grid_layout.addWidget(QLabel("Parametre"), 2, 0)
+        grid_layout.addWidget(QLabel("Ekle (+/-)"), 2, 1)
+        grid_layout.setColumnStretch(0, 1) 
+        grid_layout.setColumnStretch(1, 0) 
+
+        self.spin_adders_ui = {}
+        
+        def create_btn_spinbox():
+            container = QWidget()
+            h_layout = QHBoxLayout(container)
+            h_layout.setContentsMargins(0, 0, 0, 0)
+            h_layout.setSpacing(1) 
+            spin = QDoubleSpinBox()
+            spin.setRange(-10000.0, 10000.0)
+            spin.setSingleStep(1.0)
+            spin.setValue(0.00)
+            spin.setPrefix("+")
+            spin.setDecimals(2)
+            spin.setFixedWidth(70) 
+            spin.valueChanged.connect(self.run_simulation)
+            btn_down = QPushButton(); btn_down.setObjectName("SimBtn")
+            btn_down.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarUnshadeButton))
+            btn_down.setFixedSize(20, 25); btn_down.clicked.connect(lambda: spin.stepDown())
+            btn_up = QPushButton(); btn_up.setObjectName("SimBtn")
+            btn_up.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarShadeButton))
+            btn_up.setFixedSize(20, 25); btn_up.clicked.connect(lambda: spin.stepUp())
+            h_layout.addWidget(btn_down); h_layout.addWidget(spin); h_layout.addWidget(btn_up)
+            return container, spin
+
+        row = 3 
+        for key, p in PARAMETRELER.items():
+            lbl = QLabel(p["ad"])
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color: #000000; font-size: 11px;")
+            container_add, spin_add = create_btn_spinbox()
+            self.spin_adders_ui[key] = spin_add
+            grid_layout.addWidget(lbl, row, 0)
+            grid_layout.addWidget(container_add, row, 1)
+            row += 1
+
+        reset_btn = QPushButton("🔄 Simülasyonu Sıfırla")
+        reset_btn.setStyleSheet("background-color: #95A5A6; color: white; margin-top: 10px;")
+        reset_btn.clicked.connect(self.reset_simulation)
+        grid_layout.addWidget(reset_btn, row, 0, 1, 2)
+        v_spacer = QWidget()
+        v_spacer.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        grid_layout.addWidget(v_spacer, row+1, 0)
+        grid_layout.setRowStretch(row+1, 1)
+        self.sim_dock.setWidget(widget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.sim_dock)
+
+    def toggle_simulation_panel(self, checked):
+        if checked: self.sim_dock.show()
+        else: self.sim_dock.hide()
+
+    def run_simulation(self):
+        for key in PARAMETRELER.keys():
+            self.sim_adders[key] = self.spin_adders_ui[key].value()
+        self.recalculate_scores()
+        self.refresh_tabs()
+
+    def reset_simulation(self):
+        for key in PARAMETRELER.keys():
+            self.spin_adders_ui[key].blockSignals(True)
+            self.spin_adders_ui[key].setValue(0.00)
+            self.spin_adders_ui[key].blockSignals(False)
+        self.chk_trend.blockSignals(True)
+        self.chk_trend.setChecked(False)
+        self.chk_trend.blockSignals(False)
+        self.trend_include_selcuk = False
+        self.run_simulation()
+
+    def refresh_tabs(self):
+        current_tab = self.tabs.currentIndex()
+        self.tabs.clear()
+        
+        # --- Sütun Yapısı ---
+        # Üniversite | Değişim | Toplam Skor | ... Parametreler ...
+        # Trend (Sparkline) sütununu KALDIRDIK
+        final_cols = ["Üniversite", "Rank_Change", "SUR TOPLAM SKOR"]
+        for p in PARAMETRELER.values(): final_cols.append(p["ad"] + " (Puan)")
+        
+        existing_cols = [col for col in final_cols if col in self.current_df.columns]
+        
+        # Ana Tabloyu Oluştur
+        self.add_table_to_tab(self.current_df[existing_cols], "🏆 GENEL SIRALAMA", is_total=True)
+        
+        # Alt Tablolar
+        for key, p in PARAMETRELER.items():
+            col_ham = p["ad"] + "_Ham"
+            col_puan = p["ad"] + " (Puan)"
+            if col_ham in self.current_df.columns and col_puan in self.current_df.columns:
+                df_sub = self.current_df[["Üniversite", col_ham, col_puan]].sort_values(col_ham, ascending=False).reset_index(drop=True)
+                self.add_table_to_tab(df_sub, p["ad"])
+                
+        self.tabs.setCurrentIndex(current_tab)
+        if self.search_input.text(): self.filter_tables(self.search_input.text())
+        self.apply_zoom()
+
+    def add_table_to_tab(self, dataframe, title, is_total=False):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        tab.setStyleSheet("background-color: transparent;") 
+        
+        table = QTableWidget()
+        table.setRowCount(len(dataframe))
+        table.setColumnCount(len(dataframe.columns))
+        
+        # Başlıkları ayarla
+        headers = []
+        for col in dataframe.columns:
+            if col == "Rank_Change": headers.append("Değ.")
+            else: headers.append(col)
+        table.setHorizontalHeaderLabels(headers)
+        
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection) 
+        table.setShowGrid(False)
+        table.verticalHeader().setVisible(True)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(lambda pos: self.show_context_menu(pos, table))
+        
+        selcuk_bg = QColor(255, 249, 196, 230)
+        bold_font = QFont("Segoe UI", self.current_font_size, QFont.Weight.Bold)
+        
+        for i in range(len(dataframe)):
+            uni_name = str(dataframe.iloc[i]["Üniversite"] if "Üniversite" in dataframe.columns else dataframe.iloc[i, 0])
+            is_selcuk = "SELÇUK" in turkce_buyuk_harf(uni_name)
+            
+            col_idx_ui = 0
+            for col_name in dataframe.columns:
+                val = dataframe.iloc[i][col_name]
+                
+                # --- ÖZEL SÜTUNLAR ---
+                if col_name == "Rank_Change":
+                    # Değişim Okları
+                    item = QTableWidgetItem()
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    if val > 0:
+                        item.setText(f"▲ +{int(val)}")
+                        item.setForeground(QColor("green"))
+                        item.setFont(bold_font)
+                    elif val < 0:
+                        item.setText(f"▼ {int(val)}")
+                        item.setForeground(QColor("red"))
+                        item.setFont(bold_font)
+                    else:
+                        item.setText("-")
+                        item.setForeground(QColor("gray"))
+                    table.setItem(i, col_idx_ui, item)
+                    
+                else:
+                    # Normal Veri
+                    item = NumericItem(str(val)) if isinstance(val, (int, float)) else QTableWidgetItem(str(val))
+                    if isinstance(val, (int, float)): item.setData(Qt.ItemDataRole.UserRole, val)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    item.setForeground(QColor("#000000")) 
+                    
+                    if is_selcuk:
+                        item.setBackground(selcuk_bg)
+                        item.setFont(bold_font)
+                        if col_idx_ui == 0: item.setText(str(val)) 
+                    
+                    if col_idx_ui == 0: item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                    
+                    if is_total and col_name == "SUR TOPLAM SKOR":
+                        item.setFont(bold_font)
+                        if not is_selcuk: item.setForeground(QColor("#0d6321"))
+                        else: item.setForeground(QColor("#000000"))
+                        
+                    table.setItem(i, col_idx_ui, item)
+                
+                col_idx_ui += 1
+                
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True) 
+        layout.addWidget(table)
+        self.tabs.addTab(tab, title)
+
+    def show_context_menu(self, pos, table):
+        item = table.itemAt(pos)
+        if not item: return
+        row = item.row()
+        uni_name = table.item(row, 0).text() 
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { background-color: #FFFFFF; color: #000000; } QMenu::item:selected { background-color: #3498DB; color: white; }")
+        
+        # 1. Hedef Analizi
+        action_target = QAction(f"🎯 '{uni_name}' İçin Hedef Sıralama Belirle", self)
+        action_target.triggered.connect(lambda: self.analyze_target(table, row))
+        menu.addAction(action_target)
+        
+        # 2. Kafa Kafaya (Sadece Genel Sıralama sekmesinde ve Selçuk değilse)
+        if self.tabs.currentIndex() == 0 and "SELÇUK" not in turkce_buyuk_harf(uni_name):
+            action_h2h = QAction(f"🆚 Selçuk Üni. ile Kıyasla", self)
+            action_h2h.triggered.connect(lambda: self.open_head_to_head(uni_name))
+            menu.addAction(action_h2h)
+            
+        menu.exec(table.mapToGlobal(pos))
+
+    def open_head_to_head(self, competitor_name):
+        # Verileri hazırla
+        selcuk_row = self.current_df[self.current_df["Universite_Key"].str.contains("SELÇUK", na=False)]
+        competitor_row = self.current_df[self.current_df["Üniversite"] == competitor_name]
+        
+        if selcuk_row.empty or competitor_row.empty:
+            QMessageBox.warning(self, "Hata", "Veri bulunamadı.")
+            return
+            
+        # Series'e çevir ve isim ekle
+        s_data = selcuk_row.iloc[0].to_dict()
+        s_data['Name'] = "Selçuk Üniversitesi"
+        c_data = competitor_row.iloc[0].to_dict()
+        c_data['Name'] = competitor_name
+        
+        dialog = HeadToHeadDialog(s_data, c_data, self)
+        dialog.exec()
+
+    def analyze_target(self, table, current_row):
+        if self.tabs.currentIndex() != 0:
+            QMessageBox.warning(self, "Uyarı", "Hedef analizi sadece 'Genel Sıralama' tablosunda yapılabilir.")
+            return
+        
+        # "SUR TOPLAM SKOR" sütununu bul
+        score_col = -1
+        for c in range(table.columnCount()):
+            if "TOPLAM" in table.horizontalHeaderItem(c).text():
+                score_col = c
+                break
+        
+        current_rank = current_row + 1
+        current_score_item = table.item(current_row, score_col) 
+        if current_score_item is None: return
+        current_score = float(current_score_item.data(Qt.ItemDataRole.UserRole)) 
+        
+        target_rank, ok = QInputDialog.getInt(self, "Hedef Belirle", 
+                                              f"Şu an {current_rank}. sıradasınız.\nHedeflediğiniz sıralama kaç?", 
+                                              value=max(1, current_rank-1), min=1, max=table.rowCount())
+        if not ok or target_rank >= current_rank: return
+        
+        target_row = target_rank - 1
+        target_uni = table.item(target_row, 0).text()
+        target_score_item = table.item(target_row, score_col)
+        target_score = float(target_score_item.data(Qt.ItemDataRole.UserRole))
+        
+        gap = target_score - current_score + 0.1 
+        analyzed_uni_name = table.item(current_row, 0).text()
+        analyzed_key = turkce_buyuk_harf(analyzed_uni_name)
+        
+        search_term = analyzed_key 
+        
+        # --- KRİTİK EKLENTİ: İSTATİSTİKLERİ ÇEK ---
+        # Bu satır, kullanıcının seçtiği üniversitenin toplam hoca ve yayın sayısını tahmin eder.
+        self.uni_stats = self.get_university_stats(analyzed_key)
+        
+        # --- 1. TEKLİ ODAK ANALİZİ ---
+        single_suggestions = []
+        count = 0 
+        
+        for key, p in PARAMETRELER.items():
+            temp_adders = self.sim_adders.copy()
+            low = 0.0
+            high = 20000.0 
+            required_adder = high
+            for _ in range(30): 
+                mid = (low + high) / 2
+                temp_adders[key] = self.sim_adders[key] + mid 
+                sim_df = self.get_simulated_df(temp_adders)
+                try:
+                    rank_idx = sim_df[sim_df["Universite_Key"] == search_term].index
+                    if rank_idx.empty: break
+                    new_rank = rank_idx[0] + 1
+                    if new_rank <= target_rank:
+                        required_adder = mid
+                        high = mid 
+                    else: low = mid 
+                except Exception as e:
+                    print(f"Analiz hatası: {e}")
+                    break
+            
+            if required_adder < 19999.0:
+                fmt_inc = f"+{required_adder:.1f}" if required_adder >= 1 else f"+{required_adder:.3f}"
+                single_suggestions.append({
+                    "code": key,
+                    "required_adder": fmt_inc
+                })
+                count += 1
+            if count >= 6: break # En kolay 6 öneriyi göster
+
+        # --- 2. DENGELİ DAĞILIM ANALİZİ ---
+        balanced_suggestions = {}
+        total_weight = sum([self.active_weights.get(k, 0) for k in PARAMETRELER])
+        
+        selcuk_row = self.current_df[self.current_df["Universite_Key"] == analyzed_key].iloc[0]
+        
+        for key, p in PARAMETRELER.items():
+            weight = self.active_weights.get(key, 0)
+            if weight == 0: continue
+            
+            # Bu parametre, toplam açığın ne kadarını kapatmalı?
+            target_score_contribution = (gap * weight) / total_weight
+            
+            col_ham = p["ad"] + "_Ham"
+            if col_ham in self.current_df.columns:
+                max_val = self.current_df[col_ham].max()
+                required_raw_increase = (target_score_contribution * max_val) / weight if max_val > 0 else 0
+                balanced_suggestions[key] = required_raw_increase
+            
+        # Yeni Dialog Penceresini Aç
+        dialog = TargetAnalysisDialog(target_rank, target_uni, gap, single_suggestions, balanced_suggestions, self.uni_stats, self)
+        dialog.exec()
+
+    def open_comparison_chart(self):
+        if self.tabs.currentIndex() != 0: 
+            QMessageBox.warning(self, "Hata", "Lütfen GENEL SIRALAMA sekmesine geçin.")
+            return
+        page = self.tabs.widget(0)
+        table = page.findChild(QTableWidget)
+        selected_rows = [item.row() for item in table.selectedItems()]
+        selected_rows = list(set(selected_rows)) 
+        if len(selected_rows) < 2:
+            QMessageBox.warning(self, "Uyarı", "Kıyaslama için en az 2 satır seçmelisiniz (Ctrl tuşu ile).")
+            return
+        comparison_data = { 'Labels': [], 'Universities': {} }
+        headers = []
+        col_indices = []
+        for col in range(table.columnCount()):
+            txt = table.horizontalHeaderItem(col).text()
+            if "(Puan)" in txt and "TOPLAM" not in txt:
+                clean = txt.replace(" (Puan)", "").replace("Oranı", "")
+                headers.append(clean[:15] + ".." if len(clean)>15 else clean)
+                col_indices.append(col)
+        comparison_data['Labels'] = headers
+        for row in selected_rows:
+            uni = table.item(row, 0).text()
+            scores = []
+            for c in col_indices:
+                 item = table.item(row, c)
+                 try: val = float(item.text())
+                 except (ValueError, AttributeError): val = 0.0
+                 scores.append(val)
+            comparison_data['Universities'][uni] = scores
+        RadarChartWindow(comparison_data, self).exec()
+
+    def filter_tables(self, text):
+        search_text = turkce_buyuk_harf(text)
+        for i in range(self.tabs.count()):
+            table = self.tabs.widget(i).findChild(QTableWidget)
+            if table:
+                for row in range(table.rowCount()):
+                    item = table.item(row, 0)
+                    table.setRowHidden(row, search_text not in turkce_buyuk_harf(item.text()))
+
+    def export_to_excel(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Kaydet", "SUR_Simulasyon.xlsx", "Excel (*.xlsx)")
+        if path:
+            final_cols = ["Üniversite", "SUR TOPLAM SKOR"]
+            for p in PARAMETRELER.values():
+                final_cols.append(p["ad"] + "_Ham")
+                final_cols.append(p["ad"] + " (Puan)")
+            existing_cols = [col for col in final_cols if col in self.current_df.columns]
+            df_to_export = self.current_df[existing_cols]
+            df_to_export.to_excel(path, index=False)
+            QMessageBox.information(self, "Tamam", "Dosya kaydedildi.")
+
+    def export_to_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Kaydet", "SUR_Rapor.pdf", "PDF (*.pdf)")
+        if not path: return
+        final_cols = ["Üniversite", "SUR TOPLAM SKOR"]
+        for p in PARAMETRELER.values():
+            final_cols.append(p["ad"] + "_Ham")
+            final_cols.append(p["ad"] + " (Puan)")
+        existing_cols = [col for col in final_cols if col in self.current_df.columns]
+        df_to_export = self.current_df[existing_cols].head(50) 
+        printer = QPrinter(QPrinter.PrinterMode.ScreenResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(path)
+        printer.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Landscape, QMarginsF(10,10,10,10)))
+        html = "<h1 style='text-align:center'>SUR Raporu</h1>" + df_to_export.to_html(border=1, index=False)
+        doc = QTextDocument()
+        doc.setHtml(html)
+        doc.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.DevicePixel).size()))
+        doc.print(printer)
+        QMessageBox.information(self, "Tamam", "PDF oluşturuldu.")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion") 
+    splash_path = resource_path("selcuklogo2.jpg")
+    splash_pix = QPixmap(splash_path)
+    window = SURApp() 
+    if not splash_pix.isNull():
+        SPLASH_DURATION = 3000 
+        splash = SplashScreen(splash_path, display_time=SPLASH_DURATION)
+        splash.start_loading(window) 
+    else:
+        window.start_fade_in()
+    sys.exit(app.exec())
