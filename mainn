@@ -14,9 +14,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                              QLabel, QHeaderView, QMessageBox, QFrame, QSplashScreen,
                              QAbstractItemView, QLineEdit, QPushButton, QFileDialog, 
                              QDialog, QDockWidget, QFormLayout, QSpinBox, QDoubleSpinBox, 
-                             QMenu, QInputDialog, QStyleFactory, QGridLayout, QSizePolicy, QStyle, QDialogButtonBox, QComboBox, QGroupBox, QCheckBox, QStyledItemDelegate, QScrollArea)
-from PyQt6.QtCore import Qt, QSize, QTimer, QMarginsF, QSizeF, QBuffer, QByteArray, QPropertyAnimation, QEasingCurve, QUrl, QRect
-from PyQt6.QtGui import QFont, QColor, QIcon, QTextDocument, QPageSize, QPageLayout, QAction, QPalette, QMouseEvent, QPainter, QPixmap, QDesktopServices, QPen, QBrush, QCursor
+                             QMenu, QInputDialog, QStyleFactory, QGridLayout, QSizePolicy, QStyle, QDialogButtonBox, QComboBox, QGroupBox, QCheckBox)
+from PyQt6.QtCore import Qt, QSize, QTimer, QMarginsF, QSizeF, QBuffer, QByteArray, QPropertyAnimation, QEasingCurve, QUrl
+from PyQt6.QtGui import QFont, QColor, QIcon, QTextDocument, QPageSize, QPageLayout, QAction, QPalette, QMouseEvent, QPainter, QPixmap, QDesktopServices, QPen, QBrush
 from PyQt6.QtPrintSupport import QPrinter
 
 # Grafik Kütüphanesi
@@ -28,98 +28,26 @@ from matplotlib.figure import Figure
 warnings.filterwarnings("ignore")
 
 # =============================================================================
-# AYARLAR VE STRATEJİK AÇIKLAMALAR
+# AYARLAR
 # =============================================================================
-myappid = 'selcuk.sur.prototip.v10.9.final_integrated' 
+myappid = 'selcuk.sur.prototip.v10.5.trend_restored_no_spark' 
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 except ImportError:
     pass
 
-# impact_type: 
-# 'direct': Direkt sayı (örn: +10 bölüm)
-# 'x_paper': Katsayı * Toplam Yayın (örn: %10 * 1000 = 100 makale)
-# 'x_faculty': Katsayı * Hoca Sayısı (örn: 1.5 * 2000 = 3000 makale)
-# 'quality': Sadece kalite artışı (örn: %50 daha fazla atıf)
-
 PARAMETRELER = {
-    "p1": { 
-        "dosya": "1_makale_hacmi_fractional.xlsx", "agirlik": 10, "ad": "Toplam Yayın Hacmi (Fractional)",
-        "desc": "Üniversitenin toplam makale üretim kapasitesidir (yazar sayısına oranlanmış).",
-        "strategy": "Çok yazarlı makaleler puanı böler. Tek yazarlı veya sadece kurum içi (Selçuk-Selçuk) ortaklı makaleleri teşvik ederek puan kaybını önleyin.",
-        "impact_type": "direct",
-        "fmt": "Bu hedef için net <b>{val:.0f} adet</b> tam puanlık (fractional) makale artışı gerekir."
-    },
-    "p2": { 
-        "dosya": "10_makale_hoca_orani.xlsx", "agirlik": 5,  "ad": "Öğretim Üyesi Başına Düşen Yayın",
-        "desc": "Verimlilik göstergesidir. Toplam yayının hoca sayısına bölümüdür.",
-        "strategy": "Sadece aktif hocalarla bu artış zor. Hiç yayın yapmayan 'pasif' kitleyi harekete geçirecek teşvik/yaptırım uygulayın.",
-        "impact_type": "x_faculty",
-        "fmt": "Mevcut kadronuzla, bu yıl toplamda <b>{impact:.0f} adet fazladan makale</b> üretilmesi gerekir."
-    },
-    "p3": { 
-        "dosya": "2_hoca_basina_q1q2.xlsx", "agirlik": 15, "ad": "Nitelikli Yayın Performansı (Q1/Q2)",
-        "desc": "Yayınların kalitesini ölçer. En iyi dergilerdeki (Q1/Q2) yayın oranıdır.",
-        "strategy": "Q3/Q4 dergi yayınlarına verilen teşvikleri kısıtlayın, tüm ödül mekanizmasını Q1 dergilere yönlendirin. 'Daha az ama daha kaliteli' yayın yapın.",
-        "impact_type": "x_paper",
-        "fmt": "Yıllık üretimden yaklaşık <b>{impact:.0f} adet makalenin</b> daha Q1/Q2 dergilerde basılması (kaydırılması) gerekir."
-    },
-    "p4": { 
-        "dosya": "3_fwci_etki.xlsx", "agirlik": 15, "ad": "Alan Ağırlıklı Atıf Etkisi (FWCI)",
-        "desc": "Yayınların dünya ortalamasına göre ne kadar atıf aldığıdır (Dünya Ort. = 1.0).",
-        "strategy": "Sıfır çeken (atıf almayan) yayınları engelleyin. Derleme (Review) makalelerine ağırlık verin ve popüler konularda çalışın.",
-        "impact_type": "quality",
-        "fmt": "Tüm yayınlarınızın genel atıf kalitesinin ortalama <b>%{pct:.1f}</b> oranında iyileşmesi (daha çok atıf alması) gerekir."
-    },
-    "p5": { 
-        "dosya": "4_mukemmellik_top10.xlsx", "agirlik": 15, "ad": "Yayın Mükemmeliyeti (Top %10)",
-        "desc": "Dünyada en çok atıf alan ilk %10'luk dilime giren yayın oranıdır.",
-        "strategy": "Bu elit bir göstergedir. Sadece en kaliteli araştırmaları destekleyin, etki değeri düşük dergileri tercih etmeyin.",
-        "impact_type": "x_paper",
-        "fmt": "Yaklaşık <b>{impact:.0f} adet makalenin</b> daha 'Top %10' elit dilimine girmesi gerekir."
-    },
-    "p6": { 
-        "dosya": "5_uluslararasi_isbirligi.xlsx", "agirlik": 8,  "ad": "Uluslararası İşbirliği Kapasitesi",
-        "desc": "Yabancı kurumlarla ortak yapılan yayınların oranıdır.",
-        "strategy": "Yeni makale yazmak yerine, eldeki taslaklara yurt dışı 'network'ünü kullanarak yabancı yazar ekleyin. Doktora öğrencilerini yurt dışına gönderin.",
-        "impact_type": "x_paper",
-        "fmt": "Mevcut yayınlardan yaklaşık <b>{impact:.0f} tanesinin</b> daha 'Yabancı Ortaklı' statüsüne geçmesi gerekir."
-    },
-    "p7": { 
-        "dosya": "6_sanayi_isbirligi.xlsx", "agirlik": 5,  "ad": "Üniversite-Sanayi İşbirliği Yetkinliği",
-        "desc": "Özel sektör ile ortak yapılan yayınlardır.",
-        "strategy": "Teknokent firmalarıyla görüşüp, yapılan AR-GE projelerinin sonucunu ortak makaleye dönüştürme şartı koşun.",
-        "impact_type": "x_paper",
-        "fmt": "Yaklaşık <b>{impact:.0f} adet makalede</b> daha sanayi/şirket çalışanı yazar bulunması gerekir."
-    },
-    "p8": { 
-        "dosya": "7_doktora_verimliligi.xlsx", "agirlik": 10, "ad": "Doktora Eğitim Verimliliği",
-        "desc": "Hoca başına düşen mezun doktora öğrencisi sayısıdır.",
-        "strategy": "Doktora süreçlerini hızlandırın, uzayan tezleri bitirtin. Doktora kontenjanlarını hocaların performansına göre artırın.",
-        "impact_type": "x_faculty",
-        "fmt": "Mevcut kadroyla bu yıl <b>{impact:.0f} adet fazladan Doktora öğrencisi</b> mezun edilmelidir."
-    },
-    "p9": { 
-        "dosya": "8_acik_erisim.xlsx", "agirlik": 5,  "ad": "Açık Bilim ve Erişim Oranı",
-        "desc": "Herkese açık (ücretsiz erişilebilir) yayınların oranıdır.",
-        "strategy": "Kütüphane anlaşmalı Open Access dergileri duyurun veya yayınlarınızı yasal süre sonunda üniversitenin açık arşivine (DSpace) yükletin.",
-        "impact_type": "x_paper",
-        "fmt": "Yaklaşık <b>{impact:.0f} adet makalenin</b> daha Açık Erişimli (Open Access) hale getirilmesi gerekir."
-    },
-    "p10": { 
-        "dosya": "9_lisans_ogrenci_orani.xlsx", "agirlik": 7,  "ad": "Öğretim Üyesi Başına Lisans Öğrencisi",
-        "desc": "Eğitim yükü göstergesidir. Düşük olması (az öğrenci) daha iyidir.",
-        "strategy": "Lisans kontenjanlarını optimize edin veya hoca sayısını artırın.",
-        "impact_type": "quality",
-        "fmt": "Hoca başına düşen öğrenci yükünün <b>%{pct:.1f}</b> oranında hafifletilmesi (veya hoca sayısının artırılması) gerekir."
-    },
-    "p11": { 
-        "dosya": "11_akreditasyon.xlsx", "agirlik": 5,  "ad": "Eğitim Kalitesi ve Akreditasyon",
-        "desc": "Akredite olmuş (MÜDEK, FEDEK vb.) program sayısıdır.",
-        "strategy": "Bölüm başkanlarına akreditasyon başvurusu yapmaları için hedef verin ve süreci destekleyin.",
-        "impact_type": "direct",
-        "fmt": "Toplamda <b>{val:.0f} adet yeni bölümün</b> daha akreditasyon belgesi alması gerekir."
-    }
+    "p1": { "dosya": "1_makale_hacmi_fractional.xlsx", "agirlik": 10, "ad": "Toplam Yayın Hacmi (Fractional)" },
+    "p2": { "dosya": "10_makale_hoca_orani.xlsx", "agirlik": 5,  "ad": "Öğretim Üyesi Başına Düşen Yayın" },
+    "p3": { "dosya": "2_hoca_basina_q1q2.xlsx", "agirlik": 15, "ad": "Nitelikli Yayın Performansı (Q1/Q2)" },
+    "p4": { "dosya": "3_fwci_etki.xlsx", "agirlik": 15, "ad": "Alan Ağırlıklı Atıf Etkisi (FWCI)" },
+    "p5": { "dosya": "4_mukemmellik_top10.xlsx", "agirlik": 15, "ad": "Yayın Mükemmeliyeti (Top %10)" },
+    "p6": { "dosya": "5_uluslararasi_isbirligi.xlsx", "agirlik": 8,  "ad": "Uluslararası İşbirliği Kapasitesi" },
+    "p7": { "dosya": "6_sanayi_isbirligi.xlsx", "agirlik": 5,  "ad": "Üniversite-Sanayi İşbirliği Yetkinliği" },
+    "p8": { "dosya": "7_doktora_verimliligi.xlsx", "agirlik": 10, "ad": "Doktora Eğitim Verimliliği" },
+    "p9": { "dosya": "8_acik_erisim.xlsx", "agirlik": 5,  "ad": "Açık Bilim ve Erişim Oranı" },
+    "p10": { "dosya": "9_lisans_ogrenci_orani.xlsx", "agirlik": 7,  "ad": "Öğretim Üyesi Başına Lisans Öğrencisi" },
+    "p11": { "dosya": "11_akreditasyon.xlsx", "agirlik": 5,  "ad": "Eğitim Kalitesi ve Akreditasyon" }
 }
 
 # =============================================================================
@@ -132,19 +60,6 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-
-def turkce_buyuk_harf(text):
-    if not isinstance(text, str): return str(text)
-    text = text.replace('i', 'İ').replace('ı', 'I')
-    tr_map = str.maketrans("ğüşıöç", "ĞÜŞIÖÇ")
-    return text.translate(tr_map).upper().strip()
-
-class NumericItem(QTableWidgetItem):
-    def __lt__(self, other):
-        try:
-            return (self.data(Qt.ItemDataRole.UserRole) < other.data(Qt.ItemDataRole.UserRole))
-        except:
-            return super().__lt__(other)
 
 # --- KAFA KAFAYA KIYASLAMA PENCERESİ ---
 class HeadToHeadDialog(QDialog):
@@ -313,7 +228,22 @@ class AutoSelectSpinBox(QSpinBox):
         super().mousePressEvent(event)
         QTimer.singleShot(0, self.selectAll)
 
-# --- WEIGHT DIALOG ---
+class NumericItem(QTableWidgetItem):
+    def __lt__(self, other):
+        try:
+            return (self.data(Qt.ItemDataRole.UserRole) < other.data(Qt.ItemDataRole.UserRole))
+        except:
+            return super().__lt__(other)
+
+def turkce_buyuk_harf(text):
+    if not isinstance(text, str): return str(text)
+    text = text.replace('i', 'İ').replace('ı', 'I')
+    tr_map = str.maketrans("ğüşıöç", "ĞÜŞIÖÇ")
+    return text.translate(tr_map).upper().strip()
+
+# =============================================================================
+# AYARLAR PENCERESİ
+# =============================================================================
 class WeightDialog(QDialog):
     def __init__(self, current_weights, year_weights, parent=None):
         super().__init__(parent)
@@ -442,133 +372,6 @@ class WeightDialog(QDialog):
     def get_year_weights(self):
         return {key: spin.value() for key, spin in self.year_inputs.items()}
 
-# --- YENİ 2 SEKMELİ HEDEF ANALİZİ PENCERESİ ---
-class TargetAnalysisDialog(QDialog):
-    def __init__(self, target_rank, target_uni, gap, single_suggestions, balanced_suggestions, uni_stats, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Stratejik Hedef Analizi ve Yol Haritası")
-        self.setWindowIcon(qta.icon('fa5s.chart-line', color='#2C3E50'))
-        self.resize(750, 650)
-        self.uni_stats = uni_stats
-        self.setStyleSheet("""
-            QDialog { background-color: #FFFFFF; }
-            QLabel { color: #2C3E50; }
-            QGroupBox { font-weight: bold; border: 1px solid #BDC3C7; border-radius: 6px; margin-top: 10px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }
-            QTabWidget::pane { border: 1px solid #C0C0C0; top: -1px; } 
-            QTabBar::tab { background: #E0E0E0; color: #000000; padding: 10px; min-width: 150px; }
-            QTabBar::tab:selected { background: #FFFFFF; border-bottom-color: #FFFFFF; font-weight: bold; }
-        """)
-        
-        layout = QVBoxLayout(self)
-        
-        # Üst Bilgi Paneli
-        header_frame = QFrame()
-        header_frame.setStyleSheet("background-color: #ECF0F1; border-radius: 8px; padding: 10px;")
-        h_layout = QVBoxLayout(header_frame)
-        
-        lbl_target = QLabel(f"🎯 HEDEF: {target_rank}. Sıra ({target_uni})")
-        lbl_target.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        lbl_target.setStyleSheet("color: #C0392B;")
-        
-        lbl_gap = QLabel(f"📊 Gereken Toplam Puan Artışı: +{gap:.2f} puan")
-        lbl_gap.setFont(QFont("Segoe UI", 12))
-        lbl_gap.setStyleSheet("color: #2980B9;")
-        
-        h_layout.addWidget(lbl_target)
-        h_layout.addWidget(lbl_gap)
-        layout.addWidget(header_frame)
-        
-        # Sekmeli Yapı
-        tabs = QTabWidget()
-        
-        # --- SEKME 1: ODAKLANMIŞ BÜYÜME (Eski Yöntem) ---
-        tab_single = QWidget()
-        self.build_suggestion_tab(tab_single, single_suggestions, "Bu senaryoda, hedefe ulaşmak için <b>SADECE BİR</b> parametreye odaklanılır.\n"
-                                                            "Aşağıdaki seçeneklerden <b>HERHANGİ BİRİNİ (VEYA)</b> yapmanız yeterlidir.")
-        
-        # --- SEKME 2: DENGELİ STRATEJİ (Yeni Yöntem) ---
-        tab_balanced = QWidget()
-        self.build_suggestion_tab(tab_balanced, balanced_suggestions, "Bu senaryoda, hedefe ulaşmak için yük <b>TÜM PARAMETRELERE</b> dengeli dağıtılır.\n"
-                                                            "Aşağıdaki hedeflerin <b>HEPSİNİ AYNI ANDA (VE)</b> gerçekleştirmeniz gerekir.", is_balanced=True)
-        
-        # Tabları ekle
-        tabs.addTab(tab_single, "🚀 Odaklanmış Büyüme (Tekli)")
-        tabs.addTab(tab_balanced, "⚖️ Dengeli Strateji (Karma)")
-        layout.addWidget(tabs)
-        
-        btn_close = QPushButton("Anlaşıldı, Kapat")
-        btn_close.clicked.connect(self.accept)
-        layout.addWidget(btn_close)
-
-    def build_suggestion_tab(self, tab_widget, suggestions, info_text, is_balanced=False):
-        layout = QVBoxLayout(tab_widget)
-        lbl_info = QLabel(info_text)
-        lbl_info.setWordWrap(True)
-        layout.addWidget(lbl_info)
-        
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        l_v = QVBoxLayout(content)
-        
-        items = suggestions if not is_balanced else suggestions.items()
-        
-        for item_data in items:
-            if is_balanced:
-                p_code, val = item_data
-                if val <= 0.001: continue
-                adder_val = val
-            else:
-                p_code = item_data['code']
-                try: adder_val = float(item_data['required_adder'].replace("+", ""))
-                except: adder_val = 0.0
-            
-            param_info = PARAMETRELER.get(p_code, {})
-            
-            # --- SAHA KARŞILIĞI HESABI ---
-            impact_text = "Hesaplanamıyor"
-            i_type = param_info.get("impact_type", "direct")
-            fmt_str = param_info.get("fmt", "{val}")
-            
-            if i_type == "direct":
-                impact_text = fmt_str.format(val=adder_val)
-            elif i_type == "quality":
-                impact_text = fmt_str.format(pct=adder_val*100)
-            elif i_type == "x_paper":
-                # Toplam Yayın Sayısı * Artış Oranı
-                calc_impact = self.uni_stats.get('total_papers', 1000) * adder_val
-                impact_text = fmt_str.format(impact=calc_impact)
-            elif i_type == "x_faculty":
-                # Hoca Sayısı * Artış
-                calc_impact = self.uni_stats.get('total_faculty', 500) * adder_val
-                impact_text = fmt_str.format(impact=calc_impact)
-
-            gb = QGroupBox(param_info.get("ad", "Parametre"))
-            if is_balanced:
-                gb.setStyleSheet("QGroupBox { background-color: #F9FBE7; border: 1px solid #CDDC39; }")
-            else:
-                gb.setStyleSheet("QGroupBox { background-color: #FAFAFA; border: 1px solid #D0D0D0; }")
-                
-            v = QVBoxLayout(gb)
-            
-            adder_str = f"+{adder_val:.3f}" if adder_val < 1 else f"+{adder_val:.1f}"
-            v.addWidget(QLabel(f"Hedef Veri Artışı: <span style='color:#E74C3C; font-weight:bold;'>{adder_str}</span>"))
-            
-            # SAHA KARŞILIĞI (MAVİ KUTU)
-            lbl_impact = QLabel(f"🧩 <b>Saha Karşılığı:</b> {impact_text}")
-            lbl_impact.setStyleSheet("background-color: #E3F2FD; color: #0D47A1; padding: 4px; border-radius: 4px; border: 1px solid #BBDEFB;")
-            lbl_impact.setWordWrap(True)
-            v.addWidget(lbl_impact)
-            
-            v.addWidget(QLabel(f"💡 <i>{param_info.get('strategy', '')}</i>"))
-            l_v.addWidget(gb)
-            
-        l_v.addStretch()
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-
 # =============================================================================
 # GRAFİK PENCERESİ
 # =============================================================================
@@ -645,18 +448,18 @@ class RadarChartWindow(QDialog):
 class SURApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SUR: Akademik Performans Simülasyonu v10.9")
+        self.setWindowTitle("SUR: Akademik Performans Simülasyonu v10.5")
         self.setGeometry(50, 50, 1600, 900) 
         self.setWindowIcon(QIcon(resource_path("logo.ico")))
         
         self.raw_data = None 
         self.current_df = None 
-        self.base_ranks = {} 
-        self.uni_stats = {} # Seçilen (Selçuk) üniversitenin temel istatistikleri
+        self.base_ranks = {} # Başlangıç sıralamalarını tutmak için
         
         self.active_weights = {k: v["agirlik"] for k, v in PARAMETRELER.items()}
         self.year_weights = {"y1": 20, "y2": 30, "y3": 50}
         
+        # Simülasyon değişkenleri
         self.sim_adders = {key: 0.0 for key in PARAMETRELER.keys()}
         self.trend_include_selcuk = False 
         
@@ -672,28 +475,6 @@ class SURApp(QMainWindow):
         self.refresh_tabs()
         self.apply_zoom()
         self.fade_in_animation = None
-
-    def get_university_stats(self, uni_key):
-        """Üniversitenin P1 ve P2 verilerinden Hoca ve Toplam Yayın sayısını tahmin eder."""
-        row = self.current_df[self.current_df["Universite_Key"] == uni_key]
-        if row.empty: return {'total_papers': 1000, 'total_faculty': 500}
-        
-        # P1: Toplam Hacim (Fractional) -> Bunu Toplam Yayın (Total) olarak varsayalım
-        p1_val = row.iloc[0]["p1_Ham"] if "p1_Ham" in row.columns else 0
-        
-        # P2: Hoca Başına Yayın
-        p2_val = row.iloc[0]["p2_Ham"] if "p2_Ham" in row.columns else 0.1
-        
-        # Türetme: Hoca Sayısı = Yayın / (Yayın/Hoca)
-        if p2_val > 0:
-            est_faculty = p1_val / p2_val
-        else:
-            est_faculty = 500 # Fallback
-            
-        return {
-            'total_papers': p1_val if p1_val > 0 else 1000,
-            'total_faculty': est_faculty if est_faculty > 0 else 500
-        }
 
     def start_fade_in(self):
         self.setWindowOpacity(0.0)
@@ -816,17 +597,26 @@ class SURApp(QMainWindow):
             else: val_weighted = (df_calc[f"{key}_y1"] * w1) + (df_calc[f"{key}_y2"] * w2) + (df_calc[f"{key}_y3"] * w3)
             
             if use_trend:
+                # 1. Büyüme Oranları
                 col1 = df_calc[f"{key}_y1"].replace(0, np.nan)
                 growth1 = (df_calc[f"{key}_y2"] - df_calc[f"{key}_y1"]) / col1
+                
                 col2 = df_calc[f"{key}_y2"].replace(0, np.nan)
                 growth2 = (df_calc[f"{key}_y3"] - df_calc[f"{key}_y2"]) / col2
+                
                 avg_growth = (growth1.fillna(0) + growth2.fillna(0)) / 2
+                
+                # 2. Trend Değeri (2026 Tahmini)
                 val_trend = df_calc[f"{key}_y3"] * (1 + avg_growth)
                 val_trend = val_trend.apply(lambda x: max(0, x))
+                
                 df_calc[key] = val_trend
+                
+                # EĞER kullanıcı "Selçuk'a Trend Uygulama" dediyse (Hayır seçtiyse)
                 if not self.trend_include_selcuk:
                     selcuk_indices = df_calc[df_calc["Universite_Key"].str.contains("SELÇUK", na=False)].index
                     if not selcuk_indices.empty:
+                        # Selçuk'u standart hesaplamaya geri döndür
                         df_calc.loc[selcuk_indices, key] = val_weighted.loc[selcuk_indices]
             else:
                 df_calc[key] = val_weighted
@@ -893,16 +683,6 @@ class SURApp(QMainWindow):
         else:
             self.trend_include_selcuk = False 
         self.run_simulation()
-
-    def open_settings_dialog(self):
-        dialog = WeightDialog(self.active_weights, self.year_weights, self)
-        if dialog.exec():
-            self.active_weights = dialog.get_weights()
-            self.year_weights = dialog.get_year_weights()
-            self.recalculate_scores()
-            self.refresh_tabs()
-            self.apply_zoom()
-            QMessageBox.information(self, "Bilgi", "Ayarlar ve ağırlıklar güncellendi.")
 
     def initUI(self):
         main_widget = BackgroundWidget(resource_path("selcuklogo.png"))
@@ -1018,6 +798,16 @@ class SURApp(QMainWindow):
         self.refresh_tabs()
         self.apply_zoom()
 
+    def open_settings_dialog(self):
+        dialog = WeightDialog(self.active_weights, self.year_weights, self)
+        if dialog.exec():
+            self.active_weights = dialog.get_weights()
+            self.year_weights = dialog.get_year_weights()
+            self.recalculate_scores()
+            self.refresh_tabs()
+            self.apply_zoom()
+            QMessageBox.information(self, "Bilgi", "Ayarlar ve ağırlıklar güncellendi.")
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
@@ -1055,6 +845,7 @@ class SURApp(QMainWindow):
                 if "SELÇUK" in turkce_buyuk_harf(table.item(row, 0).text()): rows_to_bold.append(row)
             cols_to_bold = []
             for col in range(table.columnCount()):
+                # Toplam skor sütununu bul
                 if "TOPLAM" in table.horizontalHeaderItem(col).text(): cols_to_bold.append(col)
             for row in rows_to_bold:
                 for col in range(table.columnCount()):
@@ -1166,7 +957,6 @@ class SURApp(QMainWindow):
         
         # --- Sütun Yapısı ---
         # Üniversite | Değişim | Toplam Skor | ... Parametreler ...
-        # Trend (Sparkline) sütununu KALDIRDIK
         final_cols = ["Üniversite", "Rank_Change", "SUR TOPLAM SKOR"]
         for p in PARAMETRELER.values(): final_cols.append(p["ad"] + " (Puan)")
         
@@ -1314,7 +1104,6 @@ class SURApp(QMainWindow):
         if self.tabs.currentIndex() != 0:
             QMessageBox.warning(self, "Uyarı", "Hedef analizi sadece 'Genel Sıralama' tablosunda yapılabilir.")
             return
-        
         # "SUR TOPLAM SKOR" sütununu bul
         score_col = -1
         for c in range(table.columnCount()):
@@ -1342,15 +1131,8 @@ class SURApp(QMainWindow):
         analyzed_key = turkce_buyuk_harf(analyzed_uni_name)
         
         search_term = analyzed_key 
-        
-        # --- KRİTİK EKLENTİ: İSTATİSTİKLERİ ÇEK ---
-        # Bu satır, kullanıcının seçtiği üniversitenin toplam hoca ve yayın sayısını tahmin eder.
-        self.uni_stats = self.get_university_stats(analyzed_key)
-        
-        # --- 1. TEKLİ ODAK ANALİZİ ---
-        single_suggestions = []
+        msg = f"🎯 <b>HEDEF:</b> {target_rank}. Sıra ({target_uni})<br>📊 <b>Gereken Puan Artışı:</b> +{gap:.2f} puan<br><br><u>Hedefe ulaşmak için aşağıdaki seçeneklerden <b>HERHANGİ BİRİNİ</b> (tek başına) yapmanız yeterlidir:</u><br>"
         count = 0 
-        
         for key, p in PARAMETRELER.items():
             temp_adders = self.sim_adders.copy()
             low = 0.0
@@ -1371,38 +1153,15 @@ class SURApp(QMainWindow):
                 except Exception as e:
                     print(f"Analiz hatası: {e}")
                     break
-            
-            if required_adder < 19999.0:
-                fmt_inc = f"+{required_adder:.1f}" if required_adder >= 1 else f"+{required_adder:.3f}"
-                single_suggestions.append({
-                    "code": key,
-                    "required_adder": fmt_inc
-                })
+            fmt_inc = f"{required_adder:.1f}"
+            if required_adder < 1: fmt_inc = f"{required_adder:.3f}"
+            if required_adder < 19999.0: 
+                msg += f"• <b>{p['ad']}</b> verisini <b>+{fmt_inc}</b> artırırsanız.<br>"
                 count += 1
-            if count >= 6: break # En kolay 6 öneriyi göster
-
-        # --- 2. DENGELİ DAĞILIM ANALİZİ ---
-        balanced_suggestions = {}
-        total_weight = sum([self.active_weights.get(k, 0) for k in PARAMETRELER])
-        
-        selcuk_row = self.current_df[self.current_df["Universite_Key"] == analyzed_key].iloc[0]
-        
-        for key, p in PARAMETRELER.items():
-            weight = self.active_weights.get(key, 0)
-            if weight == 0: continue
-            
-            # Bu parametre, toplam açığın ne kadarını kapatmalı?
-            target_score_contribution = (gap * weight) / total_weight
-            
-            col_ham = p["ad"] + "_Ham"
-            if col_ham in self.current_df.columns:
-                max_val = self.current_df[col_ham].max()
-                required_raw_increase = (target_score_contribution * max_val) / weight if max_val > 0 else 0
-                balanced_suggestions[key] = required_raw_increase
-            
-        # Yeni Dialog Penceresini Aç
-        dialog = TargetAnalysisDialog(target_rank, target_uni, gap, single_suggestions, balanced_suggestions, self.uni_stats, self)
-        dialog.exec()
+            if count >= 5: break 
+        if count == 0: msg += "<br><b>Uyarı:</b> Bu hedefe ulaşmak için tek bir parametrede yapılan artışlar yetersiz kalıyor.<br>"
+        msg += "<br><i>Not: Bu hesaplama, artışın maksimum değerleri değiştirebileceği gerçeğini simüle ederek yapılmıştır.</i>"
+        QMessageBox.information(self, "Hedef Analizi (İteratif)", msg)
 
     def open_comparison_chart(self):
         if self.tabs.currentIndex() != 0: 
